@@ -7,7 +7,7 @@ mod config;
 #[command(version, about, long_about = None)]
 struct CliArgs {
     /// Config path
-    #[arg(short, long, default_value="./config.yaml")]
+    #[arg(short, long, default_value = "./config.yaml")]
     config: String,
 }
 
