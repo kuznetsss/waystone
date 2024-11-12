@@ -1,10 +1,24 @@
-use std::fmt::Display;
+use std::{error::Error, fmt::Display};
 
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
+    #[serde(default)]
+    pub server: ServerConfig,
     pub upstream_servers: Vec<String>,
+
+    #[serde(default = "Config::default_threads_number")]
+    pub threads_number: usize,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ServerConfig {
+    #[serde(default = "ServerConfig::default_ip")]
+    ip: String,
+
+    #[serde(default)]
+    port: u32,
 }
 
 #[derive(Debug)]
@@ -14,21 +28,31 @@ pub enum ConfigError {
         error: std::io::Error,
     },
     ParseError(serde_yml::Error),
+    ValueError(Vec<String>),
 }
 
 impl Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ConfigError::*;
+
         match self {
-            ConfigError::ErrorReadingFile { path, error } => write!(
+            ErrorReadingFile { path, error } => write!(
                 f,
                 "Error reading config file '{}': {}",
                 path.to_str().unwrap(),
                 error
             ),
-            ConfigError::ParseError(err) => write!(f, "Error parsing config file {}", err),
+            ParseError(err) => write!(f, "Error parsing config file: {}", err),
+            ValueError(errs) => {
+                writeln!(f, "Wrong value found in config:")?;
+                errs.iter().try_for_each(|e| writeln!(f, "- {}", e))?;
+                Ok(())
+            }
         }
     }
 }
+
+impl Error for ConfigError {}
 
 impl From<serde_yml::Error> for ConfigError {
     fn from(value: serde_yml::Error) -> Self {
@@ -38,7 +62,14 @@ impl From<serde_yml::Error> for ConfigError {
 
 impl Config {
     pub fn new(content: &str) -> Result<Config, ConfigError> {
-        serde_yml::from_str(content).map_err(|e| e.into())
+        let config: Config =
+            serde_yml::from_str(content).map_err(|e| -> ConfigError { e.into() })?;
+
+        if let Some(err) = config.check() {
+            return Err(err);
+        }
+
+        Ok(config)
     }
 
     pub fn from_file(config_path: &std::path::Path) -> Result<Config, ConfigError> {
@@ -48,6 +79,44 @@ impl Config {
                 error: e,
             })?;
         Self::new(content.as_str())
+    }
+
+    fn default_threads_number() -> usize {
+        std::thread::available_parallelism().unwrap().get()
+    }
+
+    fn check(&self) -> Option<ConfigError> {
+        let mut errors = Vec::new();
+        if self.upstream_servers.is_empty() {
+            errors.push(
+                "'upstream_servers' is empty. Please, provide at least one upstream server."
+                    .to_string(),
+            );
+        }
+        if errors.is_empty() {
+            None
+        } else {
+            Some(ConfigError::ValueError(errors))
+        }
+    }
+}
+
+impl ServerConfig {
+    pub fn ip_port(&self) -> String {
+        format!("{}:{}", self.ip, self.port)
+    }
+
+    fn default_ip() -> String {
+        "0.0.0.0".to_string()
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            ip: ServerConfig::default_ip(),
+            port: u32::default(),
+        }
     }
 }
 
@@ -83,6 +152,16 @@ upstream_servers:
         let path = file.path().to_owned();
         write!(file, "{}", VALID_YAML).unwrap();
         Config::from_file(&path).unwrap();
+    }
+
+    #[test]
+    fn threads_number_value() {
+        let threads_number = 3333;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_owned();
+        write!(file, "{}\nthreads_number: {}", VALID_YAML, threads_number).unwrap();
+        let config = Config::from_file(&path).unwrap();
+        assert_eq!(config.threads_number, threads_number);
     }
 
     #[test]

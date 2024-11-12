@@ -1,6 +1,11 @@
-use clap::Parser;
+use std::error::Error;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
+use clap::Parser;
+use tracing::error;
 mod config;
+mod load_balancer;
 
 /// Waystone: Load balancer and rate limiter supporting HTTP and WebSocket
 #[derive(Parser, Debug)]
@@ -8,10 +13,23 @@ mod config;
 struct CliArgs {
     /// Config path
     #[arg(short, long, default_value = "./config.yaml")]
-    config: String,
+    config: PathBuf,
 }
 
-fn main() {
-    let cliArgs = CliArgs::parse();
-    dbg!(cliArgs.config);
+fn main_impl() -> Result<(), Box<dyn Error>> {
+    let cli_args = CliArgs::parse();
+    let config = config::Config::from_file(&cli_args.config)?;
+    load_balancer::run(&config);
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let tracer = tracing_subscriber::fmt().with_ansi(false).finish();
+    tracing::subscriber::set_global_default(tracer);
+
+    if let Err(e) = main_impl() {
+        error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
