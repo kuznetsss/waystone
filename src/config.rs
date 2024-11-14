@@ -15,10 +15,10 @@ pub struct Config {
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     #[serde(default = "ServerConfig::default_ip")]
-    ip: String,
+    pub ip: String,
 
     #[serde(default)]
-    port: u32,
+    pub port: u32,
 }
 
 #[derive(Debug)]

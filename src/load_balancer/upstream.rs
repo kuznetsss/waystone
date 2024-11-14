@@ -28,14 +28,14 @@ impl Display for HostPort {
 }
 
 impl Upstream {
-    pub fn from_config(config: &Config) -> Self {
+    pub fn new(upstream_servers: &Vec<String>) -> Self {
         Upstream {
-            servers: config
-                .upstream_servers
-                .iter()
-                .map(|s| HostPort::new(s))
-                .collect(),
+            servers: upstream_servers.iter().map(|s| HostPort::new(s)).collect(),
         }
+    }
+
+    pub fn from_config(config: &Config) -> Self {
+        Self::new(&config.upstream_servers)
     }
 
     pub fn start_from_random(&self) -> UpstreamIterator<'_> {
@@ -63,7 +63,7 @@ impl<'a> UpstreamIterator<'a> {
 impl<'a> Iterator for UpstreamIterator<'a> {
     type Item = &'a HostPort;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_ind - self.start_ind > self.servers.len() {
+        if self.current_ind - self.start_ind + 1 > self.servers.len() {
             return None;
         }
         let result = Some(&self.servers[self.current_ind % self.servers.len()]);

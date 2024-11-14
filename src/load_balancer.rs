@@ -1,63 +1,106 @@
 mod upstream;
 
-use reqwest::{Body as ReqwestBody, StatusCode};
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tracing::info;
 
 use crate::config::Config;
-use sync_wrapper::SyncStream;
 use tokio::net::TcpListener;
 
 use upstream::Upstream;
 
 use axum::{
-    body::{Body, Bytes},
+    body::Body,
     extract::{Request, State},
-    http::{request::Parts, HeaderMap, Uri},
+    http::StatusCode,
     response::Response,
     routing::get,
     Router,
 };
 
 pub fn run(config: &Config) {
-    let state = Arc::new(Upstream::from_config(config));
-
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(config.threads_number)
         .build()
         .unwrap()
         .block_on(async {
-            let app = Router::new()
-                .route("/", get(handle_get_request))
-                .with_state(state);
-            let listener = TcpListener::bind(config.server.ip_port()).await.unwrap();
-            info!("Starting server on {}", listener.local_addr().unwrap());
-            axum::serve(listener, app).await.unwrap();
+            let load_balancer = LoadBalancer::from_config(config).await;
+            info!("Starting server on {}", load_balancer.local_address());
+            load_balancer.run().await;
         })
+}
+
+struct LoadBalancer {
+    router: Router,
+    listener: TcpListener,
+}
+
+impl LoadBalancer {
+    async fn new(ip_port: &str, upstream_servers: &Vec<String>) -> Self {
+        let upstream = Arc::new(Upstream::new(upstream_servers));
+        let router = Router::new()
+            .route("/", get(handle_get_request))
+            .with_state(upstream);
+        let listener = TcpListener::bind(ip_port).await.unwrap();
+
+        LoadBalancer { router, listener }
+    }
+
+    async fn from_config(config: &Config) -> Self {
+        Self::new(&config.server.ip_port(), &config.upstream_servers).await
+    }
+
+    fn local_address(&self) -> SocketAddr {
+        self.listener.local_addr().unwrap()
+    }
+
+    async fn run(self) {
+        axum::serve(self.listener, self.router).await.unwrap();
+    }
 }
 
 #[axum_macros::debug_handler]
 async fn handle_get_request(
     State(upstream): State<Arc<Upstream>>,
-    headers: HeaderMap,
-    uri: Uri,
-    body: Bytes,
+    request: Request,
 ) -> Result<Response, StatusCode> {
+    let (parts, body) = request.into_parts();
+    let body = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+
+    let uri_string = format!(
+        "http://host{}",
+        parts.uri.path_and_query().unwrap().as_str()
+    );
+
+    let mut request = reqwest::Request::new(
+        reqwest::Method::GET,
+        reqwest::Url::parse(&uri_string).unwrap(),
+    );
+    request.url_mut().set_scheme("http").unwrap();
+    *request.version_mut() = parts.version;
+    *request.headers_mut() = parts.headers;
+    request.headers_mut().remove(axum::http::header::HOST);
+    *request.body_mut() = Some(reqwest::Body::from(body));
+
+    let client = reqwest::Client::new();
+
     for server in upstream.start_from_random() {
         info!("Sending to {server}");
-        let request = reqwest::Client::new()
-            .request(
-                reqwest::Method::GET,
-                reqwest::Url::parse(
-                    format!("http://{}:{}{}", server.host, server.port, uri).as_str(),
-                )
-                .unwrap(),
-            )
-            .body(body.clone())
-            .headers(headers.clone());
+        let mut request_to_send = request.try_clone().unwrap();
+        request_to_send
+            .url_mut()
+            .set_host(Some(&server.host))
+            .unwrap();
+        request_to_send
+            .url_mut()
+            .set_port(Some(server.port))
+            .unwrap();
 
-        match request.send().await {
+        dbg!(&request_to_send);
+
+        match client.execute(request_to_send).await {
             Ok(r) => {
                 let response = Response::from(r);
                 let response = response.map(Body::new);
@@ -69,27 +112,30 @@ async fn handle_get_request(
         }
     }
 
-    Err(StatusCode::from_u16(501).unwrap())
+    Err(StatusCode::SERVICE_UNAVAILABLE)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{self, Config};
+    use crate::echo_server::EchoServer;
 
     #[tokio::test]
     async fn get_request() {
-        const YAML_CONFIG: &str = "
-server:
-  port: 12344
-upstream_servers:
-  - 127.0.0.1:12345
-threads_number: 2
-";
-        let config = Config::new(YAML_CONFIG).unwrap();
-
+        let upstream_server = EchoServer::new(true).await;
+        let upstream_server_port = upstream_server.port();
         tokio::spawn(async move {
-            run(&config);
+            upstream_server.run().await;
         });
+
+        let load_balancer = LoadBalancer::new("127.0.0.1:0", &vec![format!("127.0.0.1:{upstream_server_port}")]).await;
+        let load_balancer_address = format!("http://{}", load_balancer.local_address());
+        tokio::spawn(async move {
+            load_balancer.run().await;
+        });
+
+        let message = "hello world";
+        let response = reqwest::Client::new().get(&load_balancer_address).body(message).send().await.unwrap();
+        assert_eq!(response.text().await.unwrap(), message);
     }
 }

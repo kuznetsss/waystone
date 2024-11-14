@@ -2,6 +2,16 @@
 name = "waystone"
 version = "0.1.0"
 edition = "2021"
+default-run = "waystone"
+
+[[bin]]
+name = "waystone"
+path = "src/bin/waystone.rs"
+
+[[bin]]
+name = "echo_server"
+path = "src/bin/echo_server.rs"
+
 
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }

@@ -4,8 +4,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use tracing::error;
-mod config;
-mod load_balancer;
+
+use waystone::*;
 
 /// Waystone: Load balancer and rate limiter supporting HTTP and WebSocket
 #[derive(Parser, Debug)]
@@ -25,7 +25,7 @@ fn main_impl() -> Result<(), Box<dyn Error>> {
 
 fn main() -> ExitCode {
     let tracer = tracing_subscriber::fmt().with_ansi(false).finish();
-    tracing::subscriber::set_global_default(tracer);
+    tracing::subscriber::set_global_default(tracer).unwrap();
 
     if let Err(e) = main_impl() {
         error!("{e}");
