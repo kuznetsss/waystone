@@ -28,7 +28,7 @@ impl Display for HostPort {
 }
 
 impl Upstream {
-    pub fn new(upstream_servers: &Vec<String>) -> Self {
+    pub fn new(upstream_servers: &[String]) -> Self {
         Upstream {
             servers: upstream_servers.iter().map(|s| HostPort::new(s)).collect(),
         }

@@ -36,10 +36,12 @@ struct LoadBalancer {
 }
 
 impl LoadBalancer {
-    async fn new(ip_port: &str, upstream_servers: &Vec<String>) -> Self {
+    const MAX_BODY_SIZE : usize = 1024 * 1024;
+
+    async fn new(ip_port: &str, upstream_servers: &[String]) -> Self {
         let upstream = Arc::new(Upstream::new(upstream_servers));
         let router = Router::new()
-            .route("/", get(handle_get_request))
+            .route("/", get(handle_http_request).post(handle_http_request))
             .with_state(upstream);
         let listener = TcpListener::bind(ip_port).await.unwrap();
 
@@ -60,29 +62,11 @@ impl LoadBalancer {
 }
 
 #[axum_macros::debug_handler]
-async fn handle_get_request(
+async fn handle_http_request(
     State(upstream): State<Arc<Upstream>>,
     request: Request,
 ) -> Result<Response, StatusCode> {
-    let (parts, body) = request.into_parts();
-    let body = axum::body::to_bytes(body, 1024 * 1024)
-        .await
-        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
-
-    let uri_string = format!(
-        "http://host{}",
-        parts.uri.path_and_query().unwrap().as_str()
-    );
-
-    let mut request = reqwest::Request::new(
-        reqwest::Method::GET,
-        reqwest::Url::parse(&uri_string).unwrap(),
-    );
-    request.url_mut().set_scheme("http").unwrap();
-    *request.version_mut() = parts.version;
-    *request.headers_mut() = parts.headers;
-    request.headers_mut().remove(axum::http::header::HOST);
-    *request.body_mut() = Some(reqwest::Body::from(body));
+    let request = convert(request).await?;
 
     let client = reqwest::Client::new();
 
@@ -115,6 +99,29 @@ async fn handle_get_request(
     Err(StatusCode::SERVICE_UNAVAILABLE)
 }
 
+async fn convert(request: Request) -> Result<reqwest::Request, StatusCode> {
+    let (parts, body) = request.into_parts();
+    let body = axum::body::to_bytes(body, LoadBalancer::MAX_BODY_SIZE)
+        .await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+
+    let uri_string = format!(
+        "http://host{}",
+        parts.uri.path_and_query().unwrap().as_str()
+    );
+
+    let mut request = reqwest::Request::new(
+        parts.method,
+        reqwest::Url::parse(&uri_string).map_err(|_| StatusCode::BAD_REQUEST)?
+    );
+    request.url_mut().set_scheme("http").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    *request.version_mut() = parts.version;
+    *request.headers_mut() = parts.headers;
+    request.headers_mut().remove(axum::http::header::HOST);
+    *request.body_mut() = Some(reqwest::Body::from(body));
+    Ok(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +135,7 @@ mod tests {
             upstream_server.run().await;
         });
 
-        let load_balancer = LoadBalancer::new("127.0.0.1:0", &vec![format!("127.0.0.1:{upstream_server_port}")]).await;
+        let load_balancer = LoadBalancer::new("127.0.0.1:0", &[format!("127.0.0.1:{upstream_server_port}")]).await;
         let load_balancer_address = format!("http://{}", load_balancer.local_address());
         tokio::spawn(async move {
             load_balancer.run().await;
