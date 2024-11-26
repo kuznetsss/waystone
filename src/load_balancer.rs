@@ -130,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn get_request() {
         let upstream_server = EchoServer::new(true).await;
-        let upstream_server_port = upstream_server.port();
+        let upstream_server_port = upstream_server.local_address().port();
         tokio::spawn(async move {
             upstream_server.run().await;
         });

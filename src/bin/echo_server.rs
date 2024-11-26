@@ -12,7 +12,7 @@ fn main() {
         .unwrap()
         .block_on(async {
             let server = echo_server::EchoServer::new(true).await;
-            info!("Running echo server on 127.0.0.1:{}", server.port());
+            info!("Running echo server on 127.0.0.1:{}", server.local_address().port());
             server.run().await;
         });
 }
